@@ -18,22 +18,14 @@ This phase now includes foundational research for our testing environment alongs
     * **Task:** **Feature Engineering & Preprocessing.** Based on EDA, select features and prepare the data. [cite_start]This includes normalizing data to address feature scaling and handling categorical features[cite: 33]. [cite_start]It must also address class imbalance using techniques like class weighting[cite: 29].
     * **Assignees:** Team members to be assigned.
 
-* **Ticket ID:** IOT-R-07 (New)
-    * **Task:** **(SPIKE) AWS Testbed Design.** Research how to set up a cost-effective AWS cluster to emulate IoT network traffic for our live test. The primary goal is to design a configuration that stays within the **AWS free tier** while still providing a realistic environment for model validation.
-    * **Assignee:** To be assigned.
-
 ---
 
 ### **Phase 2: Core Modeling and Evaluation (Due: July 25th)**
 
 This phase focuses on selecting and building the best possible model within the time available.
 
-* **Ticket ID:** IOT-R-08 (New)
-    * **Task:** **(SPIKE) Optimal Model Selection.** Conduct a technical investigation to determine the best-performing model type for this specific problem and dataset. [cite_start]The **Random Forest classifier** will be the starting point[cite: 22], but this SPIKE should quickly evaluate its suitability against other potential candidates (e.g., Gradient Boosting, SVM).
-    * **Assignee:** To be assigned.
-
 * **Ticket ID:** IOT-R-03
-    * **Task:** **Baseline Model Training & Tuning.** Based on the outcome of the model SPIKE (IOT-R-08), develop and train the chosen classifier. Train both binary and multi-class versions and perform hyperparameter tuning to optimize performance.
+    * **Task:** **Model Implementation & Tuning (RF & XGBoost).** Develop and train the **Random Forest classifier** as a baseline. Then, implement and tune an **XGBoost classifier** to achieve the highest possible performance for the final model.
     * **Assignee:** To be assigned.
 
 * **Ticket ID:** IOT-R-04
@@ -46,8 +38,12 @@ This phase focuses on selecting and building the best possible model within the 
 
 The final days are dedicated to practical validation, compiling results, and creating the final deliverables.
 
-* **Ticket ID:** IOT-R-09 (New)
-    * **Task:** **Create AWS Test Cluster.** Following the design from the SPIKE ticket (IOT-R-07), build the AWS cluster. [cite_start]This environment will be used for a live network test to confirm the model's functionality in a simulated real-world scenario[cite: 40].
+* **Ticket ID:** IOT-R-09
+    * **Task:** **Build AWS Attack Emulation Testbed.** Build the AWS testbed using a **t2.micro EC2 instance** for the control plane and a serverless data plane with **IoT Core, SQS, Lambda, and S3**. Configure the environment to use tools like **IoT-Flock** for traffic generation.
+    * **Assignee:** To be assigned.
+
+* **Ticket ID:** IOT-R-10 (New)
+    * **Task:** **Generate & Collect Malicious Traffic Data.** Execute attack emulation scripts on the AWS testbed to generate and collect a dataset containing both benign and varied malicious traffic (e.g., DDoS, data exfiltration).
     * **Assignee:** To be assigned.
 
 * **Ticket ID:** IOT-R-05 (Stretch Goal)
