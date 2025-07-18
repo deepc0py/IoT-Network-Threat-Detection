@@ -187,6 +187,8 @@ class IoTThreatEvaluator:
     
     def generate_report(self, results: Dict[str, Any]) -> str:
         """Generate a comprehensive evaluation report."""
+        roc_auc_str = f"{results['roc_auc']:.4f}" if results['roc_auc'] is not None else 'N/A'
+        
         report = f"""
 IoT Network Threat Detection - Model Evaluation Report
 ====================================================
@@ -200,7 +202,7 @@ Accuracy:  {results['accuracy']:.4f}
 Precision: {results['precision']:.4f}
 Recall:    {results['recall']:.4f}
 F1-Score:  {results['f1_score']:.4f}
-ROC-AUC:   {results['roc_auc']:.4f if results['roc_auc'] else 'N/A'}
+ROC-AUC:   {roc_auc_str}
 
 Detailed Classification Report:
 -----------------------------

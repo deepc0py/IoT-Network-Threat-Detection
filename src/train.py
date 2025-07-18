@@ -70,7 +70,7 @@ class IoTThreatDetector:
         
         return X_scaled
     
-    def initialize_model(self, **kwargs) -> None:
+    def initialize_model(self, y: pd.Series = None, **kwargs) -> None:
         """Initialize the ML model based on model_type."""
         logger.info(f"Initializing {self.model_type} model...")
         
@@ -85,12 +85,21 @@ class IoTThreatDetector:
                 n_jobs=-1
             )
         elif self.model_type == 'xgboost':
+            # Calculate scale_pos_weight for class imbalance
+            scale_pos_weight = 1.0
+            if y is not None:
+                neg_samples = (y == 0).sum()
+                pos_samples = (y == 1).sum()
+                scale_pos_weight = neg_samples / pos_samples if pos_samples > 0 else 1.0
+                logger.info(f"XGBoost scale_pos_weight: {scale_pos_weight:.4f}")
+            
             self.model = xgb.XGBClassifier(
                 n_estimators=kwargs.get('n_estimators', 100),
                 max_depth=kwargs.get('max_depth', 6),
                 learning_rate=kwargs.get('learning_rate', 0.1),
                 subsample=kwargs.get('subsample', 0.8),
                 colsample_bytree=kwargs.get('colsample_bytree', 0.8),
+                scale_pos_weight=scale_pos_weight,
                 random_state=42,
                 n_jobs=-1
             )
@@ -170,7 +179,7 @@ def main():
     X, y = detector.load_data(args.data_path)
     
     # Initialize and train model
-    detector.initialize_model()
+    detector.initialize_model(y=y)
     results = detector.train(X, y, test_size=args.test_size)
     
     # Print results
