@@ -1,0 +1,136 @@
+# Claude Code Files - DO NOT COMMIT
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Data Files (Large datasets)
+data/
+*.csv
+*.parquet
+*.h5
+*.hdf5
+*.pickle
+*.pkl
+
+# Model Files (Large trained models)
+models/
+*.joblib
+*.model
+*.h5
+*.onnx
+*.pt
+*.pth
+
+# Logs and Outputs
+logs/
+*.log
+*.out
+*.err
+
+# AWS Credentials
+.aws/
+*.pem
+*.key
+
+# Environment Variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Documentation builds
+docs/_build/
+site/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Large files that should not be committed
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Evaluation results (can be large)
+evaluation_results/
+results/
+outputs/
+plots/
+figures/
+
+# Notebook outputs (optional - remove if you want to keep outputs)
+*.ipynb
+!notebooks/*.ipynb
+
+# Remove the last line if you want to track notebooks but exclude outputs
+# Add this instead:
+# *.ipynb filter=strip-notebook-output
