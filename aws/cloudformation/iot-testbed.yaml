@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IoT Network Threat Detection Testbed - Attack Emulation Infrastructure'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'iot-threat-detection'
+    Description: 'Name of the project for resource naming'
+  
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: 'EC2 Key Pair for SSH access to attack emulation instance'
+  
+  AllowedCIDR:
+    Type: String
+    Default: '0.0.0.0/0'
+    Description: 'CIDR block allowed to access the testbed (restrict for security)'
+
+Resources:
+  # S3 Bucket for storing captured traffic data
+  TrafficDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-traffic-data-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldData
+            Status: Enabled
+            ExpirationInDays: 30
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Topic: !Ref TrafficDataTopic
+            Event: s3:ObjectCreated:*
+
+  # SNS Topic for notifications
+  TrafficDataTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-traffic-alerts'
+      DisplayName: 'IoT Traffic Data Alerts'
+
+  # SQS Queue for buffering IoT messages
+  TrafficQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-traffic-queue'
+      VisibilityTimeoutSeconds: 60
+      MessageRetentionPeriod: 1209600  # 14 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+
+  # SQS Dead Letter Queue
+  TrafficDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-traffic-dlq'
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  # IAM Role for IoT Core to access SQS
+  IoTCoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-iot-core-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SQSPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt TrafficQueue.Arn
+
+  # IAM Role for Lambda function
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TrafficProcessingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt TrafficQueue.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource: !Sub '${TrafficDataBucket}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # Lambda function for processing traffic data
+  TrafficProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-traffic-processor'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref TrafficDataBucket
+          SQS_QUEUE_URL: !Ref TrafficQueue
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+          import uuid
+          
+          s3 = boto3.client('s3')
+          sqs = boto3.client('sqs')
+          
+          def lambda_handler(event, context):
+              bucket = os.environ['S3_BUCKET']
+              queue_url = os.environ['SQS_QUEUE_URL']
+              
+              # Poll SQS queue for messages
+              response = sqs.receive_message(
+                  QueueUrl=queue_url,
+                  MaxNumberOfMessages=10,
+                  WaitTimeSeconds=20
+              )
+              
+              messages = response.get('Messages', [])
+              processed_count = 0
+              
+              if messages:
+                  # Batch process messages
+                  batch_data = []
+                  
+                  for message in messages:
+                      try:
+                          # Parse message body
+                          body = json.loads(message['Body'])
+                          batch_data.append(body)
+                          
+                          # Delete processed message
+                          sqs.delete_message(
+                              QueueUrl=queue_url,
+                              ReceiptHandle=message['ReceiptHandle']
+                          )
+                          processed_count += 1
+                          
+                      except Exception as e:
+                          print(f"Error processing message: {e}")
+                  
+                  # Write batch to S3
+                  if batch_data:
+                      timestamp = datetime.utcnow().strftime('%Y-%m-%d_%H-%M-%S')
+                      filename = f"traffic_data/{timestamp}_{uuid.uuid4()}.json"
+                      
+                      s3.put_object(
+                          Bucket=bucket,
+                          Key=filename,
+                          Body=json.dumps(batch_data, indent=2),
+                          ContentType='application/json'
+                      )
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(f'Processed {processed_count} messages')
+              }
+
+  # EventBridge rule to trigger Lambda periodically
+  TrafficProcessingSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-traffic-processing-schedule'
+      Description: 'Trigger traffic processing Lambda every 5 minutes'
+      ScheduleExpression: 'rate(5 minutes)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt TrafficProcessorFunction.Arn
+          Id: TrafficProcessorTarget
+
+  # Permission for EventBridge to invoke Lambda
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TrafficProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt TrafficProcessingSchedule.Arn
+
+  # IoT Core Topic Rule
+  TrafficCaptureRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: !Sub '${ProjectName}TrafficCaptureRule'
+      TopicRulePayload:
+        RuleDisabled: false
+        Description: 'Capture all IoT device traffic for analysis'
+        Sql: "SELECT * FROM 'device/+/data'"
+        Actions:
+          - Sqs:
+              QueueUrl: !Ref TrafficQueue
+              RoleArn: !GetAtt IoTCoreRole.Arn
+
+  # VPC for EC2 attack emulation instance
+  TestbedVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-igw'
+
+  # Attach Internet Gateway to VPC
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TestbedVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet for EC2 instance
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestbedVPC
+      CidrBlock: '10.0.1.0/24'
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet'
+
+  # Route Table for public subnet
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestbedVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-rt'
+
+  # Route to Internet Gateway
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+  # Associate route table with public subnet
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Group for EC2 instance
+  AttackEmulationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-attack-emulation-sg'
+      GroupDescription: 'Security group for attack emulation EC2 instance'
+      VpcId: !Ref TestbedVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedCIDR
+          Description: 'SSH access'
+        - IpProtocol: tcp
+          FromPort: 8883
+          ToPort: 8883
+          CidrIp: '10.0.0.0/16'
+          Description: 'MQTT over TLS'
+        - IpProtocol: tcp
+          FromPort: 1883
+          ToPort: 1883
+          CidrIp: '10.0.0.0/16'
+          Description: 'MQTT'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: '0.0.0.0/0'
+          Description: 'All outbound traffic'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-attack-emulation-sg'
+
+  # IAM Role for EC2 instance
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: IoTTestbedPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:Connect
+                  - iot:Publish
+                  - iot:Subscribe
+                  - iot:Receive
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub '${TrafficDataBucket}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # EC2 Instance Profile
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-ec2-profile'
+      Roles:
+        - !Ref EC2Role
+
+  # EC2 Instance for attack emulation
+  AttackEmulationInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2 AMI (update for your region)
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref AttackEmulationSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y python3 python3-pip git
+          
+          # Install AWS CLI
+          pip3 install awscli boto3 paho-mqtt
+          
+          # Create attack emulation directory
+          mkdir -p /home/ec2-user/attack-emulation
+          cd /home/ec2-user/attack-emulation
+          
+          # Clone IoT-Flock (attack simulation tool)
+          git clone https://github.com/ThingzDefense/IoT-Flock.git
+          
+          # Install dependencies
+          pip3 install -r IoT-Flock/requirements.txt
+          
+          # Create custom attack scripts directory
+          mkdir -p /home/ec2-user/attack-scripts
+          
+          # Set ownership
+          chown -R ec2-user:ec2-user /home/ec2-user/attack-emulation
+          chown -R ec2-user:ec2-user /home/ec2-user/attack-scripts
+          
+          # Install CloudWatch agent
+          wget https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm
+          rpm -U ./amazon-cloudwatch-agent.rpm
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-attack-emulation'
+
+Outputs:
+  VPCId:
+    Description: 'VPC ID for the testbed'
+    Value: !Ref TestbedVPC
+    Export:
+      Name: !Sub '${ProjectName}-vpc-id'
+
+  PublicSubnetId:
+    Description: 'Public subnet ID'
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub '${ProjectName}-public-subnet-id'
+
+  AttackEmulationInstanceId:
+    Description: 'EC2 Instance ID for attack emulation'
+    Value: !Ref AttackEmulationInstance
+    Export:
+      Name: !Sub '${ProjectName}-attack-instance-id'
+
+  AttackEmulationInstancePublicIP:
+    Description: 'Public IP of attack emulation instance'
+    Value: !GetAtt AttackEmulationInstance.PublicIp
+    Export:
+      Name: !Sub '${ProjectName}-attack-instance-ip'
+
+  TrafficDataBucketName:
+    Description: 'S3 bucket for storing traffic data'
+    Value: !Ref TrafficDataBucket
+    Export:
+      Name: !Sub '${ProjectName}-traffic-bucket'
+
+  TrafficQueueURL:
+    Description: 'SQS queue URL for traffic messages'
+    Value: !Ref TrafficQueue
+    Export:
+      Name: !Sub '${ProjectName}-traffic-queue-url'
+
+  IoTEndpoint:
+    Description: 'AWS IoT Core endpoint'
+    Value: !Sub '${AWS::AccountId}.iot.${AWS::Region}.amazonaws.com'
+    Export:
+      Name: !Sub '${ProjectName}-iot-endpoint'
